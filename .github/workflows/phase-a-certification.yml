@@ -1,0 +1,83 @@
+name: Phase A Certification
+on:
+  push:
+    branches: [ main, master, "phase-a/**" ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  phase-a-certification:
+    name: Phase A — Astronomical Engine Certification
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Record commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== COMMIT IDENTITY ==="
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          ACTUAL_HEAD="$(git rev-parse HEAD)"
+          echo "git rev-parse HEAD=$ACTUAL_HEAD"
+          if [ "$ACTUAL_HEAD" != "$GITHUB_SHA" ]; then
+            echo "ERROR: Git HEAD does not match GITHUB_SHA"
+            exit 1
+          fi
+          git show --stat --oneline --decorate HEAD
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Verify certification inputs
+        run: |
+          test -f tests/independent_validation.csv
+          test -f tests/independent_validation_manifest.json
+          test -f tools/ephemeris_provenance.py
+          test -f tools/verify_independent_csv.py
+          test -d ephe
+      - name: Generate ephemeris provenance
+        run: python tools/ephemeris_provenance.py | tee ephemeris_provenance_output.txt
+      - name: Verify independent validation dataset
+        run: python tools/verify_independent_csv.py | tee independent_csv_verification.txt
+      - name: Raw independent CSV SHA-256
+        run: sha256sum tests/independent_validation.csv | tee independent_csv_sha256.txt
+      - name: Run Phase A certification tests
+        run: |
+          python -m pytest -q tests/test_astronomy.py tests/test_houses.py tests/test_concurrency.py tests/test_timezones.py tests/test_provenance.py tests/test_boundaries.py tests/test_nodes.py tests/test_nakshatra.py tests/test_integration.py | tee pytest_output.txt
+      - name: Certification gate
+        run: |
+          if grep -Eq '[1-9][0-9]* failed|[1-9][0-9]* error' pytest_output.txt; then exit 1; fi
+      - name: Generate certification snapshot
+        run: |
+          {
+            echo "=== JYOTIRVEDA PHASE A CERTIFICATION ==="
+            echo "UTC: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "GITHUB_SHA: $GITHUB_SHA"
+            echo "=== INDEPENDENT CSV SHA256 ==="
+            cat independent_csv_sha256.txt
+            echo "=== EPHEMERIS PROVENANCE ==="
+            cat ephemeris_provenance_output.txt
+            echo "=== PYTEST ==="
+            cat pytest_output.txt
+          } | tee phase_a_certification_snapshot.txt
+      - name: Upload Phase A evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-a-certification-${{ github.sha }}
+          path: |
+            pytest_output.txt
+            phase_a_certification_snapshot.txt
+            ephemeris_provenance_output.txt
+            independent_csv_verification.txt
+            independent_csv_sha256.txt
